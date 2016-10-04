@@ -1,5 +1,8 @@
 # Various tools used in this project that can be useful otherwhere.
+import numpy as np
+import pandas as pd
 from html.parser import HTMLParser
+from pyexcel_ods3 import get_data
 
 
 # Remove HTML tags.
@@ -62,3 +65,80 @@ def regex_url_pattern():
             r'|(?:(?<!@)[a-z0-9]+(?:[.\-][a-z0-9]+)*[.]'
             r'(?:' + tlds + ')\b'
             r'/?(?!@)))')
+
+
+def fill_columns_down(df, columns):
+    '''
+    Fill in fields from last occurence.
+    '''
+    for column in columns:
+        df[column] = df[column].replace('', np.nan)
+        df[column].fillna(method='ffill', inplace=True)
+
+
+def import_data_entries(source, target, output_file, log_file):
+    '''
+    Import data entries from one spreadsheet into an other.
+    '''
+    sheets = {}
+    # Mark columns that have been only filled once per article.
+    article_level_columns = ['article_ix', 'doi', 'title']
+    for name, fh in {'source': source, 'target': target}.items():
+        sheet = get_data(fh)['ajps_reference_coding']
+        header = sheet[0]
+        content = sheet[1:]
+        sheet = pd.DataFrame(columns=header, data=content)
+
+        fill_columns_down(sheet, article_level_columns)
+
+        # Add identifier to sheet column.
+        sheet.rename(columns={'reference_category':
+                              'reference_category_' + name},
+                     inplace=True)
+        sheets[name] = sheet
+
+    columns_merge_on = [c for c in header if c != 'reference_category']
+    merged = pd.merge(left=sheets['target'], right=sheets['source'],
+                      how='outer', suffixes=('_target', '_source'),
+                      on=columns_merge_on, indicator='_merge')
+
+    merged.to_csv(log_file, index_label='row_ix')
+    source_with_imports = source
+    additional_entries = np.all(merged['_merge'] != 'right_only',
+                                merged['reference_category_target'] == '')
+    source_with_imports[additional_entries, 'reference_category'] = \
+        merged[additional_entries, 'reference_category_source']
+    source_with_imports.loc[source_with_imports[article_level_columns].
+                            duplicated(), article_level_columns] = ''
+    source_with_imports.to_csv(output_file, index=False)
+
+
+def add_doi(target, source, output):
+    '''
+    Add doi column to target using information from source.
+    '''
+    matching_columns = ['title']
+    df_source = pd.read_csv(source, usecols=matching_columns + ['doi'])
+
+    sheet = get_data(target)['ajps_reference_coding']
+    header = sheet[0]
+    content = sheet[1:]
+    df_target = pd.DataFrame(columns=header, data=content)
+
+    # Add doi information only for unique articles.
+    df_target = df_target.assign(doi='', add_doi='')
+    article_start = df_target['article_ix'] != ''
+    df_target.loc[article_start, 'add_doi'] = \
+        ~df_target.loc[article_start, matching_columns].duplicated(keep=False)
+
+    # Merge doi information from source for selected articles.
+    fill_columns_down(df_target,
+                      matching_columns + ['add_doi'])
+    df_target[df_target['add_doi']] = df_target[df_target['add_doi']]. \
+        merge(df_source, how='left', on=matching_columns,
+              suffixes=('_x', '')).drop('doi_x', 1).values
+    df_target.loc[df_target[matching_columns + ['doi']].duplicated(),
+                  matching_columns + ['doi']] = ''
+    df_target = df_target[['doi', 'article_ix', 'title', 'match', 'context',
+                           'reference_category']]
+    df_target.sort_index().to_csv(output, index=None)
