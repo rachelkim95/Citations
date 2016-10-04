@@ -60,3 +60,5 @@ Please provide a specific article or row number as an example that illustrates y
   A: create a new option: paper.
 
   Thank you for answering my questions.
+  
+  2. When it specifically mentions replication materials or supplementary materials, is that data or code?
